@@ -422,6 +422,42 @@ describe('connection node half', () => {
     await dispose()
   })
 
+  it('serves a generic RPC channel when a sibling plugin provides webServer', async () => {
+    const root = new Context()
+    const routes: WebRoute[] = []
+    provideBrowserCredentials(root)
+
+    // Real profiles mount the web host and Connection as sibling plugins, so webServer
+    // is provided on another scope rather than on the scope that creates Connection.
+    const webHost = root.plugin((hostCtx) => {
+      hostCtx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    })
+    const fiber = root.plugin({ inject: [...inject], apply })
+    await webHost.await()
+    await fiber.await()
+
+    const connection = root.get('connection') as HostConnectionHandle
+    const remove = connection.rpc.handle('/sibling-rpc', async () => ({ ok: true, value: null }))
+    expect(routes.map(candidate => candidate.path)).toContain('/sibling-rpc')
+
+    await remove()
+    expect(routes.map(candidate => candidate.path)).not.toContain('/sibling-rpc')
+    await fiber.dispose()
+    await webHost.dispose()
+  })
+
+  it('refuses to serve a generic RPC channel when no scope provides webServer', async () => {
+    const ctx = new Context()
+    provideBrowserCredentials(ctx)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+
+    const connection = ctx.get('connection') as HostConnectionHandle
+    expect(() => connection.rpc.handle('/unserved', async () => ({ ok: true, value: null })))
+      .toThrow(/provides no webServer service/)
+    await fiber.dispose()
+  })
+
   it('provides a disposable dedicated RPC channel', async () => {
     const ctx = new Context()
     const routes: WebRoute[] = []

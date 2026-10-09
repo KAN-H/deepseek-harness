@@ -195,7 +195,24 @@ export class HostConnectionService extends Service implements HostConnectionHand
       },
     }
     return owner.effect(
-      () => owner.webServer.register(route),
+      () => {
+        // Read the Web server through the Context registry rather than a bound
+        // property. The composition that provides `webServer` is not necessarily the
+        // one that injects it here (the web host is a sibling plugin in real profiles),
+        // so `owner.webServer` can throw "without inject" and leave this channel
+        // unregistered: its requests then miss every named route and fall through to
+        // the static fallback, which answers 405.
+        //
+        // `requestRejection`, `authorizeIndex`, and `allowsRemoteAuthorities` already
+        // read `this.ctx.get('webServer')` for exactly this reason.
+        const webServer = owner.get('webServer')
+        if (webServer === undefined) {
+          throw new Error(
+            `connection: cannot serve RPC channel ${JSON.stringify(channel)} — this composition provides no webServer service`,
+          )
+        }
+        return webServer.register(route)
+      },
       `client-connection: ${channel} rpc channel`,
     )
   }
