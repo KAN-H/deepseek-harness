@@ -487,6 +487,38 @@
   margin-bottom: 8px;
 }
 
+/* Global panel dock: the trigger row names the current panel and the shared
+   anchored menu holds every registration, so the list never consumes the
+   workspace browser's height (phone-sized viewports included). */
+.panelMenuAnchor {
+  display: flex;
+  width: 100%;
+}
+
+.panelToggle {
+  width: 100%;
+}
+
+.panelChevron {
+  flex: none;
+  display: inline-flex;
+  margin-left: auto;
+  opacity: 0.62;
+}
+
+/* Wide column: the anchored card spans the trigger row (the Menu primitive's
+   default card is 144–360px; this wins by the anchor-qualified selector). */
+.panelMenuAnchor .panelMenuList {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Rail: the card flies out to the right as a viewport-anchored portal. */
+.panelMenuListRail {
+  width: 220px;
+  min-width: 0;
+}
+
 /* Panel entries share the New Session bar's 12px radius and 2px inset, the
    session rows' hover/selected surface, and the primary ink. */
 .panelRow {
@@ -536,8 +568,12 @@
 }
 
 .collapsed .panelList {
-  gap: 12px;
+  gap: 0;
   margin-bottom: 12px;
+}
+
+.collapsed .panelMenuAnchor {
+  justify-content: center;
 }
 
 .collapsed .panelRow {

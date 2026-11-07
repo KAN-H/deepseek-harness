@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-/** Global panel rows and DOM focus through the production slot renderer. */
+/** Global panel dock (dropdown) and DOM focus through the production slot renderer. */
 import type { Context } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { SlotTestRuntime } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -22,6 +22,11 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 const ALPHA = 'sidebar-test-alpha' as MainPanelId
 const BETA = 'sidebar-test-beta' as MainPanelId
 const runtimes = new Set<SlotTestRuntime>()
+
+beforeEach(() => {
+  // The dock remembers its expansion per device; each test starts collapsed.
+  window.localStorage.clear()
+})
 
 afterEach(async () => {
   try {
@@ -120,8 +125,20 @@ async function mountPanels(runtime: SlotTestRuntime, locale: LocaleRuntime, beta
   return { alpha, beta }
 }
 
+/** The dock trigger carries the current panel (or the generic "Panels" label). */
+function trigger(view: ReturnType<SlotTestRuntime['renderRoot']>): HTMLElement {
+  return view.getByRole('button', { name: 'Panel menu' })
+}
+
+/** Open the dropdown and return its rows (portalled in rail mode, in-nav when wide). */
+async function openMenu(view: ReturnType<SlotTestRuntime['renderRoot']>): Promise<HTMLElement[]> {
+  fireEvent.click(trigger(view))
+  const menu = await view.findByRole('menu')
+  return within(menu).getAllByRole('menuitem')
+}
+
 describe('sidebar global panels', () => {
-  it('adds late registrations, removes each plugin contribution, and leaves no empty panel-list DOM', async () => {
+  it('adds late registrations behind one dock row, and removing them leaves no panel DOM', async () => {
     const { runtime, locale, view } = await bench()
     expect(runtime.slots.entries('sidebar.panellist')).toEqual([])
     expect(view.queryByRole('navigation')).toBeNull()
@@ -130,17 +147,24 @@ describe('sidebar global panels', () => {
 
     const { alpha, beta } = await mountPanels(runtime, locale)
     const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    expect(within(navigation).getAllByRole('button')).toHaveLength(2)
-    fireEvent.click(within(navigation).getByRole('button', { name: 'Alpha panel' }))
+    // Collapsed default: the column spends one row on the dock, not one per plugin.
+    expect(within(navigation).getAllByRole('button')).toHaveLength(1)
+    expect(view.queryByRole('menu')).toBeNull()
+
+    let rows = await openMenu(view)
+    expect(rows.map(row => row.textContent)).toEqual(['Beta panel', 'Alpha panel'])
+    fireEvent.click(rows.find(row => row.textContent === 'Alpha panel')!)
     expect(view.getByRole('heading', { name: 'Alpha content' })).toBeTruthy()
+    await waitFor(() => { expect(view.queryByRole('menu')).toBeNull() })
 
     await alpha.dispose()
     await waitFor(() => {
-      expect(view.queryByRole('button', { name: 'Alpha panel' })).toBeNull()
       expect(view.queryByRole('heading', { name: 'Alpha content' })).toBeNull()
     })
     expect(runtime.slots.entries('main').map(entry => entry.options.key)).toEqual(['conversation', BETA])
-    fireEvent.click(within(navigation).getByRole('button', { name: 'Beta panel' }))
+    rows = await openMenu(view)
+    expect(rows.map(row => row.textContent)).toEqual(['Beta panel'])
+    fireEvent.click(rows[0]!)
     expect(view.getByRole('heading', { name: 'Beta content' })).toBeTruthy()
 
     await beta.dispose()
@@ -151,65 +175,62 @@ describe('sidebar global panels', () => {
     expect(runtime.slots.entries('main').map(entry => entry.options.key)).toEqual(['conversation'])
   })
 
-  it.each([false, true])('renders ordered rows, icon sizes, and tooltip labels with collapsed=%s', async (collapsed) => {
+  it.each([false, true])('opens a menu with ordered 16px rows in wide and rail mode (collapsed=%s)', async (collapsed) => {
     const { runtime, locale, view } = await bench(collapsed)
     await mountPanels(runtime, locale)
     const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    const rows = within(navigation).getAllByRole('button')
-    expect(rows.map(row => row.getAttribute('aria-label'))).toEqual(['Beta panel', 'Alpha panel'])
+    // Neither mode spends a row per panel while the menu is closed.
+    expect(within(navigation).getAllByRole('button')).toHaveLength(1)
+    expect(trigger(view).textContent).toBe(collapsed ? '' : 'Panels')
+    expect(trigger(view).getAttribute('aria-expanded')).toBe('false')
+
+    const rows = await openMenu(view)
+    expect(rows.map(row => row.textContent)).toEqual(['Beta panel', 'Alpha panel'])
+    expect(trigger(view).getAttribute('aria-expanded')).toBe('true')
     for (const [id, label] of [[BETA, 'Beta panel'], [ALPHA, 'Alpha panel']] as const) {
-      const row = within(navigation).getByRole('button', { name: label })
-      expect(row.getAttribute('aria-current')).toBeNull()
-      expect(row.textContent).toBe(collapsed ? '' : label)
+      const row = rows.find(candidate => candidate.textContent === label)!
       expect(row.querySelectorAll('svg')).toHaveLength(1)
       const icon = within(row).getByTestId(`${id}-icon`)
       expect(icon.getAttribute('data-active')).toBe('false')
-      expect(icon.querySelector('svg')?.getAttribute('width')).toBe(collapsed ? '18' : '16')
-      expect(icon.querySelector('svg')?.getAttribute('height')).toBe(collapsed ? '18' : '16')
+      expect(icon.querySelector('svg')?.getAttribute('width')).toBe('16')
+      expect(icon.querySelector('svg')?.getAttribute('height')).toBe('16')
       act(() => { row.focus() })
       expect(document.activeElement).toBe(row)
-      if (collapsed) expect(view.getByRole('tooltip').textContent).toBe(label)
-      else expect(view.queryByRole('tooltip')).toBeNull()
-      act(() => { row.blur() })
-      expect(document.activeElement).not.toBe(row)
-      expect(view.queryByRole('tooltip')).toBeNull()
     }
   })
 
   it('keeps registration order when panel rows have equal order', async () => {
     const { runtime, locale, view } = await bench()
     await mountPanels(runtime, locale, 20)
-    const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    expect(within(navigation).getAllByRole('button').map(row => row.textContent)).toEqual(['Alpha panel', 'Beta panel'])
+    const rows = await openMenu(view)
+    expect(rows.map(row => row.textContent)).toEqual(['Alpha panel', 'Beta panel'])
   })
 
-  it('selects registered main content and keeps a repeated selection active', async () => {
+  it('selects registered main content, closes the menu, and keeps a repeated selection active', async () => {
     const { runtime, locale, layout, view } = await bench()
     await mountPanels(runtime, locale)
-    const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    const alpha = within(navigation).getByRole('button', { name: 'Alpha panel' })
-    const beta = within(navigation).getByRole('button', { name: 'Beta panel' })
-    fireEvent.click(alpha)
+    let rows = await openMenu(view)
+    fireEvent.click(rows.find(row => row.textContent === 'Alpha panel')!)
     expect(layout.selectPanel).toHaveBeenLastCalledWith(ALPHA)
     expect(runtime.panelInfo.getSnapshot()).toEqual({ activePanelId: ALPHA })
-    expect(alpha.getAttribute('aria-current')).toBe('page')
-    expect(beta.getAttribute('aria-current')).toBeNull()
-    expect(within(alpha).getByTestId(`${ALPHA}-icon`).getAttribute('data-active')).toBe('true')
     expect(view.getByRole('heading', { name: 'Alpha content' })).toBeTruthy()
-    expect(view.queryByRole('heading', { name: 'Beta content' })).toBeNull()
+    await waitFor(() => {
+      expect(view.queryByRole('menu')).toBeNull()
+      expect(trigger(view).textContent).toBe('Alpha panel')
+    })
+    expect(within(trigger(view)).getByTestId(`${ALPHA}-icon`).getAttribute('data-active')).toBe('true')
 
-    fireEvent.click(alpha)
+    // Re-selecting the active panel is still a selection, and the dock row tracks it.
+    rows = await openMenu(view)
+    fireEvent.click(rows.find(row => row.textContent === 'Alpha panel')!)
     expect(layout.selectPanel).toHaveBeenLastCalledWith(ALPHA)
-    expect(alpha.getAttribute('aria-current')).toBe('page')
     expect(view.getByRole('heading', { name: 'Alpha content' })).toBeTruthy()
 
-    fireEvent.click(beta)
+    rows = await openMenu(view)
+    fireEvent.click(rows.find(row => row.textContent === 'Beta panel')!)
     expect(layout.selectPanel).toHaveBeenLastCalledWith(BETA)
     expect(runtime.panelInfo.getSnapshot()).toEqual({ activePanelId: BETA })
-    expect(alpha.getAttribute('aria-current')).toBeNull()
-    expect(beta.getAttribute('aria-current')).toBe('page')
-    expect(within(alpha).getByTestId(`${ALPHA}-icon`).getAttribute('data-active')).toBe('false')
-    expect(within(beta).getByTestId(`${BETA}-icon`).getAttribute('data-active')).toBe('true')
+    await waitFor(() => { expect(trigger(view).textContent).toBe('Beta panel') })
     expect(view.queryByRole('heading', { name: 'Alpha content' })).toBeNull()
     expect(view.getByRole('heading', { name: 'Beta content' })).toBeTruthy()
   })
@@ -217,13 +238,14 @@ describe('sidebar global panels', () => {
   it('refreshes locale labels without re-registering icons or changing plain labels', async () => {
     const { runtime, locale, view } = await bench()
     await mountPanels(runtime, locale)
-    const navigation = await view.findByRole('navigation', { name: 'Global panels' })
     const entries = runtime.slots.entries('sidebar.panellist')
     act(() => { locale.setLocale('zh') })
     await waitFor(() => {
-      expect(within(navigation).getByRole('button', { name: '甲面板' }).textContent).toBe('甲面板')
+      expect(view.getByRole('button', { name: '面板菜单' })).toBeTruthy()
     })
-    expect(within(navigation).getByRole('button', { name: 'Beta panel' }).textContent).toBe('Beta panel')
+    fireEvent.click(view.getByRole('button', { name: '面板菜单' }))
+    const menu = await view.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map(row => row.textContent)).toEqual(['Beta panel', '甲面板'])
     expect(runtime.slots.entries('sidebar.panellist')).toBe(entries)
   })
 
@@ -231,33 +253,29 @@ describe('sidebar global panels', () => {
     const { runtime, view } = await bench()
     await mountPanel(runtime, { id: ALPHA, heading: 'Alpha content', label: 'Alpha panel', order: 20 })
     await mountPanel(runtime, { id: BETA, heading: 'Beta content' })
-    const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    expect(within(navigation).getAllByRole('button').map(row => row.textContent)).toEqual([BETA, 'Alpha panel'])
-    fireEvent.click(within(navigation).getByRole('button', { name: BETA }))
+    const rows = await openMenu(view)
+    expect(rows.map(row => row.textContent)).toEqual([BETA, 'Alpha panel'])
+    fireEvent.click(rows.find(row => row.textContent === BETA)!)
     expect(view.getByRole('heading', { name: 'Beta content' })).toBeTruthy()
   })
 
   it.each([false, true])('keeps main selection while DOM focus moves between controls with collapsed=%s', async (collapsed) => {
     const { runtime, locale, layout, view } = await bench(collapsed)
     await mountPanels(runtime, locale)
-    const navigation = await view.findByRole('navigation', { name: 'Global panels' })
-    const alpha = within(navigation).getByRole('button', { name: 'Alpha panel' })
-    const beta = within(navigation).getByRole('button', { name: 'Beta panel' })
-    act(() => { alpha.focus() })
-    expect(document.activeElement).toBe(alpha)
+    const rows = await openMenu(view)
+    const alphaRow = rows.find(row => row.textContent === 'Alpha panel')!
+    act(() => { alphaRow.focus() })
+    expect(document.activeElement).toBe(alphaRow)
     expect(runtime.panelInfo.getSnapshot()).toEqual({ activePanelId: null })
-    expect(alpha.getAttribute('aria-current')).toBeNull()
     expect(layout.selectPanel).not.toHaveBeenCalled()
-    fireEvent.click(alpha)
+    fireEvent.click(alphaRow)
     const selected = runtime.panelInfo.getSnapshot()
     const textbox = view.getByRole('textbox', { name: 'Alpha content input' })
     const action = view.getByRole('button', { name: 'Alpha content action' })
-    for (const target of [textbox, action, beta, alpha]) {
+    for (const target of [textbox, action]) {
       act(() => { target.focus() })
       expect(document.activeElement).toBe(target)
       expect(runtime.panelInfo.getSnapshot()).toBe(selected)
-      expect(alpha.getAttribute('aria-current')).toBe('page')
-      expect(beta.getAttribute('aria-current')).toBeNull()
       expect(view.getByRole('heading', { name: 'Alpha content' })).toBeTruthy()
       expect(view.queryByRole('heading', { name: 'Beta content' })).toBeNull()
     }
@@ -267,7 +285,8 @@ describe('sidebar global panels', () => {
   it('disposes the sidebar while retaining independently owned main panel bodies', async () => {
     const { runtime, locale, sidebar, view } = await bench()
     await mountPanels(runtime, locale)
-    fireEvent.click(await view.findByRole('button', { name: 'Alpha panel' }))
+    const rows = await openMenu(view)
+    fireEvent.click(rows.find(row => row.textContent === 'Alpha panel')!)
     await sidebar.dispose()
     expect(view.queryByRole('navigation')).toBeNull()
     expect(runtime.slots.spec('sidebar.panellist')).toBeUndefined()

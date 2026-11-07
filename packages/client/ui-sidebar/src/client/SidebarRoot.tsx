@@ -19,16 +19,49 @@
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
-  FishLogo, IconNewChatOutlineMedium, IconNewChatOutlineRegular, IconPanelLeftOutlineRegular, isDarwinDesktop, ShortcutKeys, Tooltip,
+  FishLogo, IconChevronsUpDownOutlineRegular, IconNewChatOutlineMedium, IconNewChatOutlineRegular,
+  IconPanelLeftOutlineRegular, IconPluginPinwheelOutlineRegular, isDarwinDesktop, Menu, ShortcutKeys, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { InjectFace, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type {
-  SidebarPanelMetadata, SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps,
-} from './contract/slots.ts'
+import type { SidebarPanelMetadata, SidebarRootComponentProps } from './contract/slots.ts'
 import css from './SidebarRoot.module.css'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150
+
+/**
+ * localStorage key for the global-panel dropdown. The list is collapsed by
+ * default (a docked row carrying the active panel) because a long plugin list
+ * would otherwise push the workspace/session browser out of the column — on a
+ * phone-sized viewport it can consume the whole sidebar. The user's choice is
+ * remembered per device.
+ */
+const PANEL_MENU_STORAGE_KEY = 'dsh.sidebar.panelMenu.open'
+
+/**
+ * Read the remembered panel-dropdown expansion.
+ * @returns true when the user left the dropdown open; collapsed when storage is unavailable.
+ */
+function readPanelMenuOpen(): boolean {
+  try {
+    return window.localStorage.getItem(PANEL_MENU_STORAGE_KEY) === '1'
+  } catch {
+    // Private mode / disabled storage: keep the collapsed default.
+    return false
+  }
+}
+
+/**
+ * Remember the panel-dropdown expansion; storage failures stay silent (the
+ * menu still works for this mount).
+ * @param open - whether the dropdown is showing.
+ */
+function persistPanelMenuOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(PANEL_MENU_STORAGE_KEY, open ? '1' : '0')
+  } catch {
+    // Storage is a preference, never a precondition for the UI.
+  }
+}
 
 /**
  * How long the column's scrollbars stay drawn after the pointer leaves it.
@@ -48,40 +81,11 @@ function localBuildVersion(): string | undefined {
     + (process.env.DSH_CLIENT_GIT_DIRTY === 'true' ? '-dirty' : '')
 }
 
-type PanelRowProps =
-  Pick<SidebarPanelMetadata, 'id' | 'label'>
-  & Pick<SidebarSectionOwnerProps, 'wide'>
-  & Pick<PropsRuntime<'sidebar'>, 'usePanelInfo'>
-  & Pick<InjectFace<SidebarRootInjected>, 'selectPanel'>
-  & PropsRenderSlots<'sidebar.panellist'>
-
-/** Each panel row subscribes only to its own selection state. */
-function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
-  const active = usePanelInfo(info => info.activePanelId === id)
-  return (
-    <Tooltip label={label} delayMs={500} disabled={wide}>
-      <button
-        type="button"
-        className={clsx(css.panelRow, active && css.panelActive)}
-        aria-label={label}
-        aria-current={active ? 'page' : undefined}
-        onClick={() => { selectPanel(id) }}
-      >
-        <span className={css.panelGlyph} aria-hidden="true">
-          {renderSlot('sidebar.panellist', { size: wide ? 16 : 18, active }, { only: id })}
-        </span>
-        {wide && (
-          <span className={clsx(css.panelTitle, css.wide)}>
-            {label}
-          </span>
-        )}
-      </button>
-    </Tooltip>
-  )
-}
-
 /**
  * Render the sidebar column shell.
+ * The global-panel dock is a single row naming the current panel that opens
+ * the shared anchored menu with every registered panel (collapsed by
+ * default, so the plugin list cannot crowd the workspace browser).
  * @param props - composed slot props (runtime share + injected callbacks, contract/slots.ts).
  * @returns the sidebar element tree.
  */
@@ -98,6 +102,23 @@ export function SidebarRoot({
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels(snapshot => snapshot)
+  const activePanelId = usePanelInfo(info => info.activePanelId)
+  const activePanel = panels.find(panel => panel.id === activePanelId)
+  const [panelMenuOpen, setPanelMenuOpen] = useState(readPanelMenuOpen)
+  const closePanelMenu = (): void => {
+    setPanelMenuOpen(false)
+    persistPanelMenuOpen(false)
+  }
+  const togglePanelMenu = (): void => {
+    const next = !panelMenuOpen
+    setPanelMenuOpen(next)
+    persistPanelMenuOpen(next)
+  }
+  const panelMenuItems = panels.map(({ id, label }) => ({
+    id,
+    label,
+    icon: renderSlot('sidebar.panellist', { size: 16, active: id === activePanelId }, { only: id }),
+  }))
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
   const newShortcut = useShortcuts(rows => rows.find(row => row.id === 'session.new'))
   const toggleLabel = collapsed ? t('toggle.open') : t('toggle.collapse')
@@ -276,19 +297,53 @@ export function SidebarRoot({
         </button>
       </Tooltip>
 
+      {/* Global panel dock: one row carrying the active panel; the shared menu
+          holds every registration. Collapsed by default (and remembered) so a
+          long plugin list never eats the workspace browser's height. */}
       {panels.length > 0 && (
         <nav className={css.panelList} aria-label={t('panels.label')}>
-          {panels.map(({ id, label }) => (
-            <PanelRow
-              key={id}
-              id={id}
-              label={label}
-              wide={wide}
-              usePanelInfo={usePanelInfo}
-              selectPanel={selectPanel}
-              renderSlot={renderSlot}
-            />
-          ))}
+          <Menu
+            open={panelMenuOpen}
+            portal={!wide}
+            side={wide ? 'bottom' : 'right'}
+            align="start"
+            items={panelMenuItems}
+            selectedId={activePanelId ?? undefined}
+            selection="fill"
+            className={css.panelMenuAnchor}
+            listClassName={wide ? css.panelMenuList : css.panelMenuListRail}
+            anchor={(
+              <button
+                type="button"
+                className={clsx(css.panelRow, css.panelToggle, panelMenuOpen && css.panelActive)}
+                aria-haspopup="menu"
+                aria-expanded={panelMenuOpen}
+                aria-label={t('panels.menu.label')}
+                onClick={togglePanelMenu}
+              >
+                <span className={css.panelGlyph} aria-hidden="true">
+                  {activePanel === undefined
+                    ? <IconPluginPinwheelOutlineRegular size={wide ? 16 : 18} />
+                    : renderSlot('sidebar.panellist', { size: wide ? 16 : 18, active: true }, { only: activePanel.id })}
+                </span>
+                {wide && (
+                  <span className={clsx(css.panelTitle, css.wide)}>
+                    {activePanel?.label ?? t('panels.menu')}
+                  </span>
+                )}
+                {wide && (
+                  <span className={css.panelChevron} aria-hidden="true">
+                    <IconChevronsUpDownOutlineRegular size={14} />
+                  </span>
+                )}
+              </button>
+            )}
+            onSelect={(id) => {
+              selectPanel(id as SidebarPanelMetadata['id'])
+              closePanelMenu()
+            }}
+            onClose={closePanelMenu}
+          />
         </nav>
       )}
 
