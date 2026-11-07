@@ -10,7 +10,13 @@
  * catalogs, root panes, and effort panes move focus between rows. Escape and Shift+Tab leave a drilled pane first and otherwise close
  * back to the trigger. A drilled pane focuses the current effort or model
  * search field. Provider headings paint their background only while pinned
- * by scrolling. Clearing a query restores the full list and search focus.
+ * by scrolling. Each provider heading is also a disclosure control: with more
+ * than one route loaded, collapsing a section keeps its heading and hides its
+ * models, so a multi-route catalog stays short instead of scrolling through
+ * every route's models. The choice is remembered per device; until the user
+ * toggles a section, three or more routes open with every section but the
+ * current one collapsed, and a search always expands every section so a match
+ * is never hidden. Clearing a query restores the full list and search focus.
  * Selecting restores trigger focus without a ring until the trigger loses focus
  * or the menu reopens. Model names match a case-insensitive ordered subsequence
  * within each provider group, ranked by
@@ -41,6 +47,12 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelSelectInjected } from './slots.ts'
 import css from './ModelSelect.module.css'
 import { orderModelProviders } from './provider-order.ts'
+import {
+  defaultCollapsedProviders, persistCollapsedProviders, readCollapsedProviders,
+} from './provider-collapse.ts'
+
+/** Collapse state for a picker that has no disclosure sections (single provider or search). */
+const NO_COLLAPSED_PROVIDERS: ReadonlySet<string> = new Set()
 
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
 type Pane = 'root' | 'model' | 'effort'
@@ -74,6 +86,10 @@ export function ModelSelect(
   const [query, setQuery] = useState('')
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null)
   const [selectionFocus, setSelectionFocus] = useState(false)
+  // The user's explicit disclosure choices; null until the first toggle, so
+  // the first-open policy (defaultCollapsedProviders) can adapt to the route
+  // in use. Persisted per device so a collapsed section stays collapsed.
+  const [collapsedOverride, setCollapsedOverride] = useState<readonly string[] | null>(readCollapsedProviders)
   // The in-menu error strip serves catalog loads (its Retry re-runs the
   // load); a rejected SELECTION announces through the transient toast
   // instead, so the strip renders only while the latest failure-capable
@@ -90,6 +106,17 @@ export function ModelSelect(
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const id = useId()
 
+  /**
+   * Rows the arrow walk and Tab settle: disclosure headings and the current
+   * pane's option rows, in DOM order. Read from the DOM rather than the ref
+   * array so a provider toggle joins the walk without disturbing the model
+   * index used for ids and highlighting.
+   * @returns the enabled row buttons currently rendered in the card.
+   */
+  const focusableRows = (): HTMLButtonElement[] => menuRef.current === null
+    ? []
+    : [...menuRef.current.querySelectorAll<HTMLButtonElement>('[data-menu-row]:not([disabled])')]
+
   const groups = useMemo(() => orderModelProviders(state.groups), [state.groups])
   const choices = useMemo(() => groups.flatMap(group =>
     group.models.map(model => ({
@@ -104,12 +131,22 @@ export function ModelSelect(
       } satisfies ModelSelection,
     }))), [groups])
   const showSearch = choices.length > 4
+  const currentProvider = state.current?.provider
+  const searching = showSearch && query.trim() !== ''
+  // A single provider has nothing to narrow, and a search must never hide a
+  // match behind a collapsed heading: both cases drop the disclosure control.
+  const collapsible = groups.length > 1 && !searching
+  const collapsedProviders = useMemo<ReadonlySet<string>>(() => {
+    if (!collapsible) return NO_COLLAPSED_PROVIDERS
+    if (collapsedOverride !== null) return new Set(collapsedOverride)
+    return new Set(defaultCollapsedProviders(groups, currentProvider))
+  }, [collapsible, collapsedOverride, groups, currentProvider])
   const filteredGroups = useMemo(() => groups.map(group => ({
     ...group, models: rankByName(group.models, showSearch ? query.trim() : ''),
   })).filter(group => group.models.length > 0), [groups, query, showSearch])
-  const visibleModels = useMemo(() => filteredGroups.flatMap(group => group.models.map(model => ({
-    provider: group.id, model: model.id,
-  }))), [filteredGroups])
+  const visibleModels = useMemo(() => filteredGroups.flatMap(group => collapsedProviders.has(group.id)
+    ? []
+    : group.models.map(model => ({ provider: group.id, model: model.id }))), [filteredGroups, collapsedProviders])
   const currentVisibleIndex = visibleModels.findIndex(model =>
     model.provider === state.current?.provider && model.model === state.current.model)
   const activeModelIndex = Math.min(highlightedIndex ?? Math.max(0, currentVisibleIndex), visibleModels.length - 1)
@@ -183,7 +220,9 @@ export function ModelSelect(
       // The checked row is the value in use; a pane without one opens on its
       // first row.
       const checked = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]:not([disabled])')
-      const target = checked ?? itemRefs.current.find(item => item !== null && !item.disabled)
+      const target = checked
+        ?? menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]:not([disabled])')
+        ?? focusableRows()[0]
       // Rows a selection in flight disabled cannot take the keyboard; the
       // trigger does, so the card's keys still reach the menu.
       ;(target ?? triggerRef.current)?.focus()
@@ -197,7 +236,7 @@ export function ModelSelect(
     const viewport = groupsRef.current
     if (viewport === null) return
     return observeStickyMenuGroups(viewport)
-  }, [available, open, pane, filteredGroups])
+  }, [available, open, pane, filteredGroups, collapsedProviders])
 
   useLayoutEffect(() => {
     if (open && pane === 'model' && activeModelIndex >= 0) {
@@ -228,7 +267,8 @@ export function ModelSelect(
       setMenuPos({ left: x, top: y })
     }
     // First run measures the hidden pre-render (same commit as `open`), so
-    // the card lands placed before anything paints.
+    // the card lands placed before anything paints. A section toggle resizes
+    // the card, so the explicit collapse choice re-places it too.
     place()
     window.addEventListener('scroll', place, true)
     window.addEventListener('resize', place)
@@ -236,7 +276,7 @@ export function ModelSelect(
       window.removeEventListener('scroll', place, true)
       window.removeEventListener('resize', place)
     }
-  }, [open, pane, state, query])
+  }, [open, pane, state, query, collapsedOverride])
   /* jscpd:ignore-end */
 
   if (!available) return null
@@ -281,8 +321,37 @@ export function ModelSelect(
     setPane('root')
   }
 
+  /** Persist an explicit collapse set, in picker order, as the device's choice. */
+  const commitCollapsed = (next: ReadonlySet<string>): void => {
+    const ordered = groups.flatMap(group => next.has(group.id) ? [group.id] : [])
+    setCollapsedOverride(ordered)
+    persistCollapsedProviders(ordered)
+  }
+
+  /** Fold or unfold one provider section, remembering the choice per device. */
+  const toggleProvider = (providerId: string): void => {
+    const next = new Set(collapsedProviders)
+    if (next.has(providerId)) next.delete(providerId)
+    else next.add(providerId)
+    commitCollapsed(next)
+  }
+
+  /**
+   * Open the section holding a just-chosen model: a search result can be picked
+   * from a collapsed section, and the next open should show where that model
+   * lives rather than hide it again. Reads the device's preference rather than
+   * the search-forced expansion, which is why a search pick still updates it.
+   */
+  const revealProvider = (providerId: string): void => {
+    const next = collapsedOverride !== null
+      ? new Set(collapsedOverride)
+      : new Set(defaultCollapsedProviders(groups, currentProvider))
+    if (!next.delete(providerId)) return
+    commitCollapsed(next)
+  }
+
   const moveFocus = (offset: number): void => {
-    const items = itemRefs.current.filter(item => item !== null)
+    const items = focusableRows()
     if (items.length === 0) return
     const active = items.findIndex(item => item === document.activeElement)
     // Focus outside the rows (the trigger, which keeps it while the menu
@@ -336,7 +405,7 @@ export function ModelSelect(
       // control inside the card (a retry button) keeps the browser's traversal,
       // so the keystroke stays unconsumed there.
       const focused = document.activeElement
-      const rows = itemRefs.current.filter((item): item is HTMLButtonElement => item !== null)
+      const rows = focusableRows()
       if (focused instanceof HTMLButtonElement && rows.includes(focused)) {
         event.preventDefault()
         focused.click()
@@ -350,7 +419,8 @@ export function ModelSelect(
         return
       }
       const checked = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]:not([disabled])')
-      ;(checked ?? rows.find(item => !item.disabled))?.focus()
+      const firstRow = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]:not([disabled])')
+      ;(checked ?? firstRow ?? rows[0])?.focus()
       return
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -396,6 +466,7 @@ export function ModelSelect(
       closeAfterSelection()
       return
     }
+    revealProvider(selection.provider)
     submit(selection)
   }
 
@@ -489,13 +560,13 @@ export function ModelSelect(
         >
           {pane === 'root' && (
             <>
-              <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('model') }}>
+              <button ref={itemRef()} type="button" role="menuitem" data-menu-row="" className={css.cell} onClick={() => { drill('model') }}>
                 <span className={css.cellLabel}>{t('menu.model')}</span>
                 <span className={css.cellValue}>{modelLabel}</span>
                 <IconChevronRightOutlineRegular className={css.cellChevron} />
               </button>
               {reasoning !== undefined && (
-                <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('effort') }}>
+                <button ref={itemRef()} type="button" role="menuitem" data-menu-row="" className={css.cell} onClick={() => { drill('effort') }}>
                   <span className={css.cellLabel}>{t('menu.effort')}</span>
                   <span className={css.cellValue}>{effortLabel}</span>
                   <IconChevronRightOutlineRegular className={css.cellChevron} />
@@ -559,9 +630,20 @@ export function ModelSelect(
                 hidden={filteredGroups.length === 0}
               >
                 {filteredGroups.map((group) => {
+                  const label = group.id === 'deepseek-account' ? t('provider.account') : group.name
+                  const collapsed = collapsedProviders.has(group.id)
                   return (
-                    <MenuGroup key={group.id} label={group.id === 'deepseek-account' ? t('provider.account') : group.name}>
-                      {group.models.map((model) => {
+                    <MenuGroup
+                      key={group.id}
+                      label={label}
+                      expanded={!collapsed}
+                      onToggle={collapsible ? () => { toggleProvider(group.id) } : undefined}
+                      count={group.models.length}
+                      toggleLabel={t(collapsed ? 'provider.expand' : 'provider.collapse', {
+                        name: label, count: group.models.length,
+                      })}
+                    >
+                      {!collapsed && group.models.map((model) => {
                         const index = modelIndex++
                         const selected = state.current?.provider === group.id && state.current.model === model.id
                         return (
@@ -569,6 +651,7 @@ export function ModelSelect(
                             ref={itemRef()}
                             type="button"
                             role="menuitemradio"
+                            data-menu-row=""
                             aria-checked={selected}
                             id={`${id}-model-${index}`}
                             tabIndex={showSearch ? -1 : 0}
@@ -622,6 +705,7 @@ export function ModelSelect(
                     ref={itemRef()}
                     type="button"
                     role="menuitemradio"
+                    data-menu-row=""
                     aria-checked={effectiveEffort === level.effort}
                     className={clsx(css.option, effectiveEffort === level.effort && css.selected)}
                     key={level.key}

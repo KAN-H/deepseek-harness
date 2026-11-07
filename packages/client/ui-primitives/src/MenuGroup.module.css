@@ -35,3 +35,57 @@
 :global(html:not([data-platform='darwin'])) .heading {
   border-radius: var(--dsw-radius-md);
 }
+
+/* Disclosure heading: the whole heading row is the toggle, so a long list of
+   provider sections folds without adding a separate control column. */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toggle:hover,
+.toggle:focus-visible {
+  outline: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+.chevronCollapsed {
+  transform: rotate(-90deg);
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-caption);
+  font-weight: 400;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+}

@@ -8,6 +8,7 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ComponentProps } from 'react'
 import type { ModelDirectoryState } from '../src/client/directory.ts'
 import { ModelSelect } from '../src/client/ModelSelect.tsx'
+import { COLLAPSED_PROVIDERS_STORAGE_KEY } from '../src/client/provider-collapse.ts'
 import { en, zh } from '../src/client/locales.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 
@@ -66,6 +67,7 @@ function modelGroups(count: number): ModelDirectoryState['groups'] {
 const scrollIntoView = vi.fn()
 beforeEach(() => {
   scrollIntoView.mockClear()
+  window.localStorage.clear()
   const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scrollIntoView })
   onTestFinished(() => {
@@ -917,4 +919,124 @@ it('restores the account model name after login without changing the saved route
   act(() => { directory.update((snapshot) => { snapshot.groups = groups; snapshot.routable = true }) })
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   expect(directory.getSnapshot().current).toEqual(selected)
+})
+
+describe('ModelSelect provider sections', () => {
+  const providerGroups: ModelDirectoryState['groups'] = [
+    { id: 'alpha', name: 'Provider Alpha', models: [{ id: 'a1', name: 'Alpha One' }, { id: 'a2', name: 'Alpha Two' }] },
+    { id: 'beta', name: 'Provider Beta', models: [{ id: 'b1', name: 'Beta One' }, { id: 'b2', name: 'Beta Two' }] },
+    { id: 'gamma', name: 'Provider Gamma', models: [{ id: 'g1', name: 'Gamma One' }, { id: 'g2', name: 'Gamma Two' }] },
+  ]
+
+  function mountOpen(groups: ModelDirectoryState['groups'] = providerGroups) {
+    const select = vi.fn().mockResolvedValue({ ok: true, value: undefined })
+    render(<ModelSelect
+      locked={false}
+      available
+      directory={createSnapshotStore(state({ current: { provider: 'beta', model: 'b1' }, groups }))}
+      load={vi.fn()}
+      select={select}
+      t={t}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
+    return select
+  }
+
+  it('opens a multi-provider catalog with only the current provider section expanded', () => {
+    mountOpen()
+    // The card opens short: the current route's models, every other heading.
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent))
+      .toEqual(['Beta One', 'Beta Two'])
+    expect(screen.getByRole('group', { name: 'Provider Alpha' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '展开 Provider Alpha（2 个模型）' }).getAttribute('aria-expanded'))
+      .toBe('false')
+    expect(screen.getByRole('button', { name: '收起 Provider Beta（2 个模型）' }).getAttribute('aria-expanded'))
+      .toBe('true')
+    expect(screen.queryByRole('menuitemradio', { name: 'Alpha One' })).toBeNull()
+  })
+
+  it('expands a collapsed provider section and remembers the choice across remounts', () => {
+    mountOpen()
+    fireEvent.click(screen.getByRole('button', { name: '展开 Provider Alpha（2 个模型）' }))
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent))
+      .toEqual(['Alpha One', 'Alpha Two', 'Beta One', 'Beta Two'])
+    expect(JSON.parse(window.localStorage.getItem(COLLAPSED_PROVIDERS_STORAGE_KEY)!)).toEqual(['gamma'])
+
+    cleanup()
+    mountOpen()
+    // The explicit device choice replaces the first-open policy.
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent))
+      .toEqual(['Alpha One', 'Alpha Two', 'Beta One', 'Beta Two'])
+  })
+
+  it('folds the current provider section back to its heading', () => {
+    mountOpen()
+    fireEvent.click(screen.getByRole('button', { name: '收起 Provider Beta（2 个模型）' }))
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
+    expect(screen.getByRole('group', { name: 'Provider Beta' })).toBeTruthy()
+    expect(JSON.parse(window.localStorage.getItem(COLLAPSED_PROVIDERS_STORAGE_KEY)!))
+      .toEqual(['alpha', 'beta', 'gamma'])
+  })
+
+  it('expands every section while searching so a match is never hidden', () => {
+    mountOpen()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Gamma One' } })
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent)).toEqual(['Gamma One'])
+    // Search drops the disclosure control: a folded heading would contradict
+    // the match it is hiding.
+    expect(screen.queryByRole('button', { name: /Provider Gamma/ })).toBeNull()
+  })
+
+  it('reveals the chosen provider after selecting a search result from a collapsed section', async () => {
+    const select = mountOpen()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Gamma One' } })
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Gamma One' }))
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledWith({ provider: 'gamma', model: 'g1' })
+      expect(screen.queryByRole('group', { name: '模型与推理等级' })).toBeNull()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent))
+      .toEqual(['Beta One', 'Beta Two', 'Gamma One', 'Gamma Two'])
+  })
+
+  it('walks provider headings with the arrow keys and settles one with Tab', () => {
+    const select = vi.fn().mockResolvedValue({ ok: true, value: undefined })
+    render(<ModelSelect locked={false} available directory={createSnapshotStore(state({
+      current: { provider: 'beta', model: 'b1' },
+      groups: [
+        { id: 'alpha', name: 'Provider Alpha', models: [{ id: 'a1', name: 'Alpha One' }] },
+        { id: 'beta', name: 'Provider Beta', models: [{ id: 'b1', name: 'Beta One' }] },
+        { id: 'gamma', name: 'Provider Gamma', models: [{ id: 'g1', name: 'Gamma One' }] },
+      ],
+    }))} load={vi.fn()} select={select} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
+    const betaRow = screen.getByRole('menuitemradio', { name: 'Beta One' })
+    expect(document.activeElement).toBe(betaRow)
+    // DOM order is alpha heading, beta heading, beta row, gamma heading.
+    fireEvent.keyDown(betaRow, { key: 'ArrowDown' })
+    const gammaHeading = screen.getByRole('button', { name: '展开 Provider Gamma（1 个模型）' })
+    expect(document.activeElement).toBe(gammaHeading)
+    fireEvent.keyDown(gammaHeading, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '展开 Provider Alpha（1 个模型）' }))
+    // Tab settles the focused heading: it expands the section, no selection.
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' })
+    expect(screen.getByRole('menuitemradio', { name: 'Alpha One' })).toBeTruthy()
+    expect(select).not.toHaveBeenCalled()
+    expect(screen.getByRole('group', { name: '模型与推理等级' })).toBeTruthy()
+  })
+
+  it('keeps a single-provider catalog free of disclosure headings', () => {
+    render(<ModelSelect locked={false} available directory={createSnapshotStore(state({
+      current: { provider: 'solo', model: 's1' },
+      groups: [{ id: 'solo', name: 'Solo Provider', models: [{ id: 's1', name: 'Solo One' }] }],
+    }))} load={vi.fn()} select={vi.fn()} t={t} />)
+    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
+    expect(screen.getByRole('group', { name: 'Solo Provider' }).querySelector('[data-menu-group-heading] button')).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Solo One' })).toBeTruthy()
+  })
 })

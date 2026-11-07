@@ -11,6 +11,8 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'provider.account': 'DeepSeek 账号',
+  'provider.expand': '展开 {name}（{count} 个模型）',
+  'provider.collapse': '收起 {name}（{count} 个模型）',
   'command.label': '模型',
   'command.description': '选择本会话使用的模型',
   'option.loadError': '目录加载失败：{message}',
@@ -41,6 +43,8 @@ export type ModelKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'provider.account': 'DeepSeek Account',
+  'provider.expand': 'Expand {name} ({count} models)',
+  'provider.collapse': 'Collapse {name} ({count} models)',
   'command.label': 'Model',
   'command.description': 'Select the model for this conversation',
   'option.loadError': 'Catalog failed to load: {message}',

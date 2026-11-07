@@ -1,19 +1,66 @@
 /** Accessible menu groups with shared sticky-heading presentation and viewport observation. */
 import { useId, type ReactNode } from 'react'
+import clsx from 'clsx'
+import { IconChevronDownOutlineRegular } from './icons/index.tsx'
 import css from './MenuGroup.module.css'
 
 /**
  * Render a named group with an instance-owned heading id and an inaccessible position sentinel.
- * @param props - Caller-localized label and optional menu rows.
+ * @param props.label - Caller-localized group name.
+ * @param props.children - Optional menu rows; unmounted while a disclosure section is collapsed.
+ * @param props.expanded - Whether the disclosure section is open; ignored without `onToggle`.
+ * @param props.onToggle - Presence turns the heading into a disclosure control that folds the
+ * section, the shape a long list of provider sections needs.
+ * @param props.count - Entry count shown beside the label in disclosure mode.
+ * @param props.toggleLabel - Accessible name of the disclosure control; the visible label alone
+ * ("DeepSeek") does not say what activating it does.
  * @returns A section named by its direct heading, followed by the supplied children.
  */
-export function MenuGroup({ label, children }: { label: string; children?: ReactNode }) {
+export function MenuGroup({ label, children, expanded = true, onToggle, count, toggleLabel }: {
+  label: string
+  children?: ReactNode
+  expanded?: boolean | undefined
+  onToggle?: (() => void) | undefined
+  count?: number | undefined
+  toggleLabel?: string | undefined
+}) {
   const headingId = useId()
+  const labelId = useId()
+  const bodyId = useId()
+  const disclosure = onToggle !== undefined
   return (
-    <section role="group" aria-labelledby={headingId} data-menu-group="" className={css.group}>
+    // A disclosure section names itself from the label span alone: the heading
+    // also holds the toggle control, whose own name would otherwise be folded
+    // into the section's accessible name.
+    <section
+      role="group"
+      aria-labelledby={disclosure ? labelId : headingId}
+      data-menu-group=""
+      className={css.group}
+    >
       <span aria-hidden="true" data-menu-group-start="" className={css.start} />
-      <div id={headingId} data-menu-group-heading="" className={css.heading}>{label}</div>
-      {children}
+      <div id={headingId} data-menu-group-heading="" className={css.heading}>
+        {disclosure
+          ? (
+            <button
+              type="button"
+              data-menu-row=""
+              className={css.toggle}
+              aria-expanded={expanded}
+              aria-controls={bodyId}
+              aria-label={toggleLabel}
+              onClick={onToggle}
+            >
+              <IconChevronDownOutlineRegular className={clsx(css.chevron, !expanded && css.chevronCollapsed)} />
+              <span id={labelId} className={css.label}>{label}</span>
+              {count !== undefined && <span aria-hidden="true" className={css.count}>{count}</span>}
+            </button>
+          )
+          : label}
+      </div>
+      {disclosure
+        ? <div id={bodyId} className={css.body}>{expanded ? children : null}</div>
+        : children}
     </section>
   )
 }
